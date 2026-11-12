@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from app.schemas import ActionResult, EntryPayload, PageResult
 from app.services.query import QueryService
@@ -11,6 +12,13 @@ from app.services.query import QueryService
 router = APIRouter(prefix="/api/query", tags=["交互查询"])
 
 service = QueryService()
+
+
+class ExecutePayload(BaseModel):
+    """执行查询时携带的参数集合；参数参与缓存完整身份。"""
+
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    fail_fill: bool = Field(default=False, description="测试用：模拟缓存填充失败")
 
 LIST_FIELDS = ["语句编号", "查询表达式", "目标数据集", "返回字段", "排序条件", "分页大小", "最大行数", "超时秒数"]
 STATUSES = ["草稿", "待执行", "执行中", "已完成", "已超时"]
@@ -30,15 +38,6 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
-@router.get("/{entry_id}", response_model=dict)
-def get_entry(entry_id: int) -> dict:
-    """读取单条查询语句明细；不存在时给出可读的错误说明。"""
-    entry = service.get_entry(entry_id)
-    if entry is None:
-        raise HTTPException(status_code=404, detail=f"查询语句 {entry_id} 不存在或已归档")
-    return entry
-
-
 @router.post("", response_model=ActionResult)
 def create_entry(payload: EntryPayload) -> ActionResult:
     """登记一条查询语句，缺字段时说明原因而不是静默丢弃。"""
@@ -46,6 +45,22 @@ def create_entry(payload: EntryPayload) -> ActionResult:
     if missing:
         return ActionResult(ok=False, message=f"缺少必填字段：{'、'.join(missing)}")
     return ActionResult(ok=True, message="查询语句已登记", entry=entry)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出交互查询清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "query", "total": total, "items": items}
+
+
+@router.get("/{entry_id}", response_model=dict)
+def get_entry(entry_id: int) -> dict:
+    """读取单条查询语句明细；不存在时给出可读的错误说明。"""
+    entry = service.get_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"查询语句 {entry_id} 不存在或已归档")
+    return entry
 
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
@@ -58,8 +73,20 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     return ActionResult(ok=True, message=message, entry=entry)
 
 
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出交互查询清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "query", "total": total, "items": items}
+@router.post("/{entry_id}/execute", response_model=ActionResult)
+def execute_query(entry_id: int, payload: ExecutePayload) -> ActionResult:
+    """执行交互查询并走带身份与期限的缓存链路。
+
+    跨模块提供本次表达式、参数与数据集版本；缓存键仅作候选匹配，命中后核对完整身份。
+    填充失败时明确绕过缓存，但查询成功结果照常返回。
+    """
+    entry, message, detail = service.execute(
+        entry_id, parameters=payload.parameters, fail_fill=payload.fail_fill
+    )
+    if entry is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(
+        ok=True,
+        message=message,
+        entry={"statement": entry, "cache": detail},
+    )

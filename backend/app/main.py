@@ -26,6 +26,20 @@ for module in ROUTERS:
     app.include_router(module.router)
 
 
+@app.on_event("startup")
+def sync_cache_policies() -> None:
+    """启动时把缓存策略快照载入结果缓存引擎。
+
+    只同步策略元数据；已留存结果的绝对到期时点由缓存仓原样加载，重启不延寿。
+    """
+    from app.services.cache import CacheService
+    from app.services.cache_engine import result_cache
+
+    cache_service = CacheService()
+    # 先补齐历史策略的期限确认标记，再统一同步策略快照（不改动任何结果的到期时点）
+    cache_service.backfill_policy_flags()
+
+
 @app.get("/api/health")
 def health() -> dict[str, object]:
     """健康检查：确认服务已经监听、示例数据已经就绪。"""

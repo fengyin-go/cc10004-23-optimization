@@ -85,3 +85,7 @@ desktop.ini
 *.db
 *.pid
 *.seed
+# 结果缓存仓：运行期持久化的缓存快照，不入库（重启不延寿依赖其中的绝对到期时点）
+backend/data/
+*.cache_vault.json
+*.cache_vault.json.tmp
